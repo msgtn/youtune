@@ -1,5 +1,6 @@
 #-*-coding:utf-8-*-
 import os
+os.path.expanduser('~')
 import sys
 import time
 import youtube_dl
@@ -19,7 +20,11 @@ except IOError:
     with open('save_dir.txt', 'a+') as f:
         pickle.dump(save_dir, f)
 
-itunes_dir = 'iTunes Media' in save_dir[save_dir.rfind('/')+1:]
+print(save_dir)
+save_dir = save_dir.replace('~',os.environ['HOME'])
+
+itunes_dir = 'iTunes' in save_dir[save_dir[:-1].rfind('/')+1:]
+print(itunes_dir, save_dir[save_dir.rfind('/')+1:])
 auto_add = '/Automatically Add to iTunes.localized' if itunes_dir else None
 temp = '/temp' if itunes_dir else None
 
@@ -82,7 +87,7 @@ class Page(object):
 
         return videos
 
-    def scroll(self, scroll_wait=5.0):
+    def scroll(self, scroll_wait=3.0):
         def get_height():
             return self.br.execute_script('return document.body.scrollHeight;')
             # return self.br.execute_script('return document.body.scrollHeight;')
@@ -90,14 +95,18 @@ class Page(object):
 
         while True:
             # scroll
-            self.br.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            for _ in range(3):
+                self.br.execute_script("window.scrollTo(0, document.querySelector('#items').scrollHeight)")
+                time.sleep(1)
             # wait
+            print("Scrolling...")
             time.sleep(scroll_wait)
             # stop scrolling if height didn't change
             new_height = get_height()
             if new_height == last_height:
                 break
             last_height = new_height
+            print("Finished scrolling")
 
 # artist page
 class ArtistPage(Page):
@@ -149,13 +158,15 @@ class Video(object):
         Download
         """
         # check if filename exists and skip if it does
-        fn_match = [self.title.encode('utf-8') in file for file in files]
+        # fn_match = [self.title.encode('utf-8') in file for file in files]
+        fn_match = [self.title in file for file in files]
         if skip_if_exists and sum(fn_match):
             print("Already downloaded %s"%(self.title))
             return
 
         # download
-        ydl_op['outtmpl'] = unicode(self.filename+'.m4a')
+        # ydl_op['outtmpl'] = unicode(self.filename+'.m4a')
+        ydl_op['outtmpl'] = self.filename+'.m4a'
         with youtube_dl.YoutubeDL(ydl_op) as ydl:
             ydl.download([self.url])
 
@@ -168,10 +179,15 @@ class Video(object):
         """
         Set ID3 tags
         """
+        # os.listdir('~/')
+        # os.listdir(self.filename[:self.filename.rfind('/')])
         af = eyed3.load(self.filename+'.mp3')
-        af.tag.artist = unicode(self.artist)
-        af.tag.title = unicode(self.title)
-        af.tag.album = unicode('YouTube')
+        # af.tag.artist = unicode(self.artist)
+        # af.tag.title = unicode(self.title)
+        # af.tag.album = unicode('YouTube')
+        af.tag.artist = self.artist
+        af.tag.title = self.title
+        af.tag.album = 'YouTube'
         af.tag.save(version=eyed3.id3.ID3_DEFAULT_VERSION,encoding='utf-8')
 
     def move_to_auto(self):
