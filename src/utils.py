@@ -7,44 +7,23 @@ import youtube_dl
 import eyed3
 from selenium import webdriver as wd
 from selenium.webdriver.chrome.options import Options
-import fnmatch
+from webdriver_manager.chrome import ChromeDriverManager
 
-import pickle
-
-try:
-    with open('save_dir.txt', 'rb') as f:
-        save_dir = pickle.load(f)
-except IOError:
-    save_dir = raw_input('Enter save directory path: ')
-
-    with open('save_dir.txt', 'a+') as f:
-        pickle.dump(save_dir, f)
-
-print(save_dir)
-save_dir = save_dir.replace('~',os.environ['HOME'])
-
-itunes_dir = 'iTunes' in save_dir[save_dir[:-1].rfind('/')+1:]
-print(itunes_dir, save_dir[save_dir.rfind('/')+1:])
-auto_add = '/Automatically Add to iTunes.localized' if itunes_dir else None
-temp = '/temp' if itunes_dir else None
-
-# get all the mp3 files already in the library
-files = []
-for root,subdir,fn in os.walk(save_dir):
-    for f in fnmatch.filter(fn,'*.mp3'):
-        files.append(f)
+pref_format = 'mp3'
+pref_format = 'wav'
 
 # downloader
 ydl_op = {
     'format': '140',
     'extractaudio': True,
-    'audioformat': "mp3",
+    'audioformat': pref_format,
     'outtmpl': '',
     'noplaylist': True,
     'verbose': False,
     'postprocessors': [{
         'key': 'FFmpegExtractAudio',
-        'preferredcodec': 'mp3',
+
+        'preferredcodec': pref_format,
         'preferredquality': '192',
     }],
     'verbose': False
@@ -59,13 +38,17 @@ opt.add_argument('window-size=1920,1080')
 # page class
 # stores videos
 class Page(object):
-    def __init__(self, url):
+    def __init__(self, url, files):
         self.url = url
-        self.br = wd.Chrome(chrome_options=opt)
+        self.br = wd.Chrome(
+            # executable_path='./chromedriver',
+            executable_path=ChromeDriverManager().install(),
+            chrome_options=opt)
         self.br.get(self.url)
         self.title = self.br.title.split('-')[0].rstrip().lstrip()
+        self.files = files
 
-    def __get_videos__(self):
+    def __get_videos__(self,save_dir):
         # get list of videos found
         videos = []
         self.scroll()
@@ -79,7 +62,7 @@ class Page(object):
 
         for url,title in zip(vid_urls, vid_titles):
             title = title.strip().replace('/','|')
-            videos.append(Video(url, '',title))
+            videos.append(Video(url, '',title,save_dir))
 
         # reverse so try to download new videos first
         videos = videos[::-1]
@@ -110,59 +93,67 @@ class Page(object):
 
 # artist page
 class ArtistPage(Page):
-    def __init__(self, url):
-        super(ArtistPage, self).__init__(url)
+    def __init__(self, url, files):
+        super(ArtistPage, self).__init__(url, files)
         self.artist = self.title
 
-    def get_videos(self):
-        videos = super(ArtistPage, self).__get_videos__()
+    def get_videos(self,save_dir):
+        videos = super(ArtistPage, self).__get_videos__(save_dir)
         for video in videos:
             video.artist = self.artist
+
             # artist name might be in title
-            if '-' in video.title:
-                video.artist = video.title.split('-')[0].lstrip().rstrip()
-                print(video.artist)
-                video.title = ''.join(video.title.split('-')[1:]).lstrip().rstrip()
+            # if '-' in video.title:
+            #     video.artist = video.title.split('-')[0].lstrip().rstrip()
+            #     print(video.artist)
+            #     video.title = ''.join(video.title.split('-')[1:]).lstrip().rstrip()
+            
             video.download()
 
 # playlist page
 class PlaylistPage(Page):
-    def __init__(self, url):
-        super(PlaylistPage, self).__init__(url)
+    def __init__(self, url, files):
+        super(PlaylistPage, self).__init__(url, files)
 
-    def get_videos(self):
-        videos = super(PlaylistPage, self).__get_videos__()
+    def get_videos(self, save_dir, auto_add=False, skip_if_exists=True):
+        videos = super(PlaylistPage, self).__get_videos__(save_dir)
         for video in videos:
-            if '-' in video.title:
-                vid_split = video.title.split('-')
-                # assume that the artist is what comes before '-'
-                video.artist = vid_split[0].rstrip()
-                # title is the remaining stuff
-                video.title = '-'.join(vid_split[1:]).lstrip().rstrip()
-            video.download()
+            try:
+                if '-' in video.title:
+                    vid_split = video.title.split('-')
+                    # assume that the artist is what comes before '-'
+                    video.artist = vid_split[0].rstrip()
+                    # title is the remaining stuff
+                    video.title = '-'.join(vid_split[1:]).lstrip().rstrip()
+                print(video.title)
+                fn_match = [video.title in file for file in self.files]
+                if skip_if_exists and sum(fn_match):
+                    print("Already downloaded %s"%(video.title))
+                    continue
+                video.download(save_dir, auto_add)
+            except:
+                print("Error downloading {}".format(video.title))
+                continue
 
         return [v.title for v in videos]
 
 
 # video class
 class Video(object):
-    def __init__(self, url, artist, title, folder=save_dir+temp):
+    def __init__(self, url, artist, title, save_dir):
         self.url = url
         self.artist = artist
         self.title = title
-        self.folder = folder
-        self.filename = "%s/%s"%(self.folder,self.title)
+        self.save_dir = save_dir
+        self.filename = "%s/%s"%(self.save_dir,self.title)
 
-    def download(self, skip_if_exists=True):
+    def download(self, save_dir, auto_add):
         """
         Download
         """
         # check if filename exists and skip if it does
         # fn_match = [self.title.encode('utf-8') in file for file in files]
-        fn_match = [self.title in file for file in files]
-        if skip_if_exists and sum(fn_match):
-            print("Already downloaded %s"%(self.title))
-            return
+        
 
         # download
         # ydl_op['outtmpl'] = unicode(self.filename+'.m4a')
@@ -181,18 +172,20 @@ class Video(object):
         """
         # os.listdir('~/')
         # os.listdir(self.filename[:self.filename.rfind('/')])
-        af = eyed3.load(self.filename+'.mp3')
+        # af = eyed3.load(self.filename+'.mp3')
+        af = eyed3.load(self.filename+'.'+pref_format)
         # af.tag.artist = unicode(self.artist)
         # af.tag.title = unicode(self.title)
         # af.tag.album = unicode('YouTube')
         af.tag.artist = self.artist
         af.tag.title = self.title
         af.tag.album = 'YouTube'
+        # af.tag.album = 'End of Evangelion'
         af.tag.save(version=eyed3.id3.ID3_DEFAULT_VERSION,encoding='utf-8')
 
     def move_to_auto(self):
-        temp_f = self.folder
-        auto_f = save_dir+auto_add
+        temp_f = self.save_dir+'/temp'
+        auto_f = self.save_dir+'/Automatically Add to iTunes.localized'
         for f in os.listdir(temp_f):
             print(f)
             os.rename(
